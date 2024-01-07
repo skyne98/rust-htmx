@@ -2,12 +2,15 @@ use std::sync::Arc;
 
 use axum::{
     extract::State,
-    routing::{get, post},
+    routing::{delete, get, post, put},
     Json, Router,
 };
 use maud::{html, Markup, DOCTYPE};
 use serde::{Deserialize, Serialize};
-use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+use tokio::{
+    net::TcpListener,
+    sync::{RwLock, RwLockReadGuard, RwLockWriteGuard},
+};
 
 // === App State ===
 #[derive(Debug, Clone)]
@@ -75,13 +78,13 @@ async fn main() {
         // `GET /` goes to `root`
         .route("/", get(root))
         .route("/todos", get(todos))
-        .route("/create_todo", post(create_todo))
+        .route("/create_todo", put(create_todo))
         .route("/toggle_todo", post(toggle_todo))
-        .route("/remove_todo", post(remove_todo))
+        .route("/remove_todo", delete(remove_todo))
         .with_state(AppStateContainer::new());
 
     // run our app with hyper, listening globally on port 3000
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+    let listener = TcpListener::bind("0.0.0.0:3000").await.unwrap();
     axum::serve(listener, app).await.unwrap();
 }
 
@@ -95,13 +98,14 @@ async fn root(state: State<AppStateContainer>) -> Markup {
                 title { "Magical Axum + Maud + Htmx To-Do" }
                 script src="https://unpkg.com/htmx.org@1.9.10" {}
                 script src="https://unpkg.com/htmx.org/dist/ext/json-enc.js" {}
+                script src="https://cdn.tailwindcss.com" {}
             }
             body {
                 h1 { "Magical Axum + Maud + Htmx To-Do" }
+                (new_todo_html())
                 div id="todos" {
                     (todos(state).await)
                 }
-                (new_todo_html())
             }
         }
     }
@@ -124,7 +128,7 @@ fn todo_html(todo: &Todo) -> Markup {
                     }
                     (todo.title)
 
-                    button hx-post="/remove_todo" hx-target="#todos" hx-vals=(serde_json::json!({ "id": todo.id })) hx-ext="json-enc" { "Remove" }
+                    button hx-delete="/remove_todo" hx-target="closest li" hx-vals=(serde_json::json!({ "id": todo.id })) hx-ext="json-enc" { "Remove" }
             }
         }
     }
@@ -132,7 +136,7 @@ fn todo_html(todo: &Todo) -> Markup {
 // an input box to create a new todo
 fn new_todo_html() -> Markup {
     html! {
-        form hx-post="/create_todo" hx-target="#todos" hx-swap="innerHTML" hx-ext="json-enc" "hx-on::after-request"="this.reset()" {
+        form hx-put="/create_todo" hx-target="#todos ul" hx-swap="beforeend" hx-ext="json-enc" "hx-on::after-request"="this.reset()" {
             input type="text" name="title" placeholder="New Todo" required;
             button type="submit" { "Add" }
         }
@@ -165,7 +169,8 @@ async fn create_todo(
 ) -> Markup {
     let mut app_state = app_state.write().await;
     app_state.add(title);
-    todos_html(&app_state.todos)
+    let created_todo = app_state.todos.last().unwrap();
+    todo_html(&created_todo)
 }
 
 #[derive(Deserialize)]
@@ -191,5 +196,5 @@ async fn remove_todo(
 ) -> Markup {
     let mut app_state = app_state.write().await;
     app_state.remove(id);
-    todos_html(&app_state.todos)
+    html!()
 }
