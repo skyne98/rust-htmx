@@ -7,6 +7,7 @@ use axum::{
 };
 use maud::{html, Markup, DOCTYPE};
 use serde::{Deserialize, Serialize};
+use sled::Db;
 use tokio::{
     net::TcpListener,
     sync::{RwLock, RwLockReadGuard, RwLockWriteGuard},
@@ -34,31 +35,50 @@ impl AppStateContainer {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug)]
 struct AppState {
-    todos: Vec<Todo>,
+    handle: Db,
 }
 impl AppState {
     fn new() -> Self {
-        Self { todos: vec![] }
-    }
-    fn next_id(&self) -> u64 {
-        self.todos.len() as u64 + 1
-    }
-    fn add(&mut self, title: String) {
-        self.todos.push(Todo {
-            id: self.next_id(),
-            title,
-            completed: false,
-        });
-    }
-    fn toggle(&mut self, id: u64) {
-        if let Some(todo) = self.todos.iter_mut().find(|todo| todo.id == id) {
-            todo.completed = !todo.completed;
+        Self {
+            handle: sled::open("todos").unwrap(),
         }
     }
+    fn next_id(&self) -> u64 {
+        self.handle.generate_id().unwrap()
+    }
+    fn add(&mut self, title: String) {
+        let id = self.next_id();
+        let id_bytes = id.to_be_bytes();
+        let todo = Todo {
+            id,
+            title,
+            completed: false,
+        };
+        let todo_json = serde_json::to_string(&todo).unwrap();
+        let todo_bytes = todo_json.as_bytes();
+        self.handle.insert(id_bytes, todo_bytes).unwrap();
+    }
+    fn iter(&self) -> impl Iterator<Item = Todo> {
+        self.handle
+            .iter()
+            .map(|res| res.unwrap())
+            .map(|(_, v)| v)
+            .map(|v| serde_json::from_slice(&v).unwrap())
+    }
+    fn toggle(&mut self, id: u64) {
+        let id_bytes = id.to_be_bytes();
+        let todo_bytes = self.handle.get(id_bytes).unwrap().unwrap();
+        let mut todo: Todo = serde_json::from_slice(&todo_bytes).unwrap();
+        todo.completed = !todo.completed;
+        let todo_json = serde_json::to_string(&todo).unwrap();
+        let todo_bytes = todo_json.as_bytes();
+        self.handle.insert(id_bytes, todo_bytes).unwrap();
+    }
     fn remove(&mut self, id: u64) {
-        self.todos.retain(|todo| todo.id != id);
+        let id_bytes = id.to_be_bytes();
+        self.handle.remove(id_bytes).unwrap();
     }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -156,7 +176,7 @@ fn todos_html(todos: &[Todo]) -> Markup {
 // === Routes ===
 async fn todos(State(state): State<AppStateContainer>) -> Markup {
     let state = state.read().await;
-    let todos = &state.todos;
+    let todos = &state.iter().collect::<Vec<_>>();
     todos_html(todos)
 }
 
@@ -170,7 +190,8 @@ async fn create_todo(
 ) -> Markup {
     let mut app_state = app_state.write().await;
     app_state.add(title);
-    let created_todo = app_state.todos.last().unwrap();
+    let todos = &app_state.iter().collect::<Vec<_>>();
+    let created_todo = todos.last().unwrap();
     todo_html(&created_todo)
 }
 
@@ -184,7 +205,8 @@ async fn toggle_todo(
 ) -> Markup {
     let mut app_state = app_state.write().await;
     app_state.toggle(id);
-    let toggled_todo = app_state.todos.iter().find(|todo| todo.id == id).unwrap();
+    let todos = &app_state.iter().collect::<Vec<_>>();
+    let toggled_todo = todos.iter().find(|todo| todo.id == id).unwrap();
     todo_html(&toggled_todo)
 }
 
