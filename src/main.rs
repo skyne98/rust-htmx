@@ -100,11 +100,13 @@ async fn root(state: State<AppStateContainer>) -> Markup {
                 script src="https://unpkg.com/htmx.org/dist/ext/json-enc.js" {}
                 script src="https://cdn.tailwindcss.com" {}
             }
-            body {
-                h1 { "Magical Axum + Maud + Htmx To-Do" }
-                (new_todo_html())
-                div id="todos" {
-                    (todos(state).await)
+            body class="bg-gray-100 font-sans leading-normal tracking-normal" {
+                div class="container mx-auto p-8" {
+                    h1 class="text-4xl text-center text-gray-700 mb-6" { "Magical Axum + Maud + Htmx To-Do" }
+                    (new_todo_html())
+                    div id="todos" class="mt-6" {
+                        (todos(state).await)
+                    }
                 }
             }
         }
@@ -113,38 +115,37 @@ async fn root(state: State<AppStateContainer>) -> Markup {
 
 // === Components ===
 // a single line item in the todo list
-// without an input box, this is just a label
-// and controls to toggle and remove the todo
 fn todo_html(todo: &Todo) -> Markup {
     html! {
-            li {
-                label {
-                    @if todo.completed {
-                        input type="checkbox" checked hx-post="/toggle_todo" hx-target="#todos" hx-vals=(serde_json::json!({ "id": todo.id }))
-                            hx-ext="json-enc" hx-swap="outerHTML";
-                    } @else {
-                        input type="checkbox" hx-post="/toggle_todo" hx-target="#todos" hx-vals=(serde_json::json!({ "id": todo.id }))
-                            hx-ext="json-enc";
-                    }
-                    (todo.title)
-
-                    button hx-delete="/remove_todo" hx-target="closest li" hx-vals=(serde_json::json!({ "id": todo.id })) hx-ext="json-enc" { "Remove" }
+        li class="flex items-center bg-white rounded-lg shadow-lg my-2 py-2 px-4" {
+            label class="flex-grow" {
+                @if todo.completed {
+                    input type="checkbox" checked class="mr-2" hx-post="/toggle_todo" hx-target="closest li" hx-vals=(serde_json::json!({ "id": todo.id }))
+                        hx-ext="json-enc" hx-swap="outerHTML";
+                } @else {
+                    input type="checkbox" class="mr-2" hx-post="/toggle_todo" hx-target="closest li" hx-vals=(serde_json::json!({ "id": todo.id }))
+                        hx-ext="json-enc" hx-swap="outerHTML";
+                }
+                span class={@if todo.completed { "line-through" } @else { "" }} { (todo.title) }
             }
+            button class="bg-red-500 hover:bg-red-700 text-white font-bold py-1 px-2 rounded" hx-delete="/remove_todo" hx-target="closest li" hx-swap="outerHTML" hx-vals=(serde_json::json!({ "id": todo.id })) hx-ext="json-enc" { "Remove" }
         }
     }
 }
+
 // an input box to create a new todo
 fn new_todo_html() -> Markup {
     html! {
-        form hx-put="/create_todo" hx-target="#todos ul" hx-swap="beforeend" hx-ext="json-enc" "hx-on::after-request"="this.reset()" {
-            input type="text" name="title" placeholder="New Todo" required;
-            button type="submit" { "Add" }
+        form class="flex justify-between items-center" hx-put="/create_todo" hx-target="#todos ul" hx-swap="beforeend" hx-ext="json-enc" "hx-on::after-request"="this.reset()" {
+            input class="w-full rounded p-2 mr-4" type="text" name="title" placeholder="New Todo" required;
+            button class="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded" type="submit" { "Add" }
         }
     }
 }
+
 fn todos_html(todos: &[Todo]) -> Markup {
     html! {
-        ul {
+        ul class="list-none p-0" {
             @for todo in todos {
                 (todo_html(&todo))
             }
@@ -183,7 +184,8 @@ async fn toggle_todo(
 ) -> Markup {
     let mut app_state = app_state.write().await;
     app_state.toggle(id);
-    todos_html(&app_state.todos)
+    let toggled_todo = app_state.todos.iter().find(|todo| todo.id == id).unwrap();
+    todo_html(&toggled_todo)
 }
 
 #[derive(Deserialize)]
