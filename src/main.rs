@@ -1,13 +1,21 @@
+pub mod db;
+pub mod error;
+pub mod models;
+pub mod repository;
+
 use std::sync::Arc;
 
+use anyhow::Result;
 use axum::{
     extract::State,
     routing::{delete, get, post, put},
     Json, Router,
 };
+use db::driver::Db;
+use error::AppError;
 use maud::{html, Markup, DOCTYPE};
-use serde::{Deserialize, Serialize};
-use sled::Db;
+use models::Todo;
+use serde::Deserialize;
 use tokio::{
     net::TcpListener,
     sync::{RwLock, RwLockReadGuard, RwLockWriteGuard},
@@ -15,85 +23,33 @@ use tokio::{
 
 // === App State ===
 #[derive(Debug, Clone)]
-struct AppStateContainer {
-    state: Arc<RwLock<AppState>>,
+struct AppState {
+    state: Arc<RwLock<Db>>,
 }
-impl AppStateContainer {
-    fn new() -> Self {
-        Self {
-            state: Arc::new(RwLock::new(AppState::new())),
-        }
+impl AppState {
+    fn new() -> Result<Self> {
+        Ok(Self {
+            state: Arc::new(RwLock::new(Db::new()?)),
+        })
     }
 
     // borrow immutable state
-    async fn read(&self) -> RwLockReadGuard<'_, AppState> {
+    async fn read(&self) -> RwLockReadGuard<'_, Db> {
         self.state.read().await
     }
     // borrow mutable state
-    async fn write(&mut self) -> RwLockWriteGuard<'_, AppState> {
+    async fn write(&mut self) -> RwLockWriteGuard<'_, Db> {
         self.state.write().await
     }
 }
 
-#[derive(Debug)]
-struct AppState {
-    handle: Db,
-}
-impl AppState {
-    fn new() -> Self {
-        Self {
-            handle: sled::open("todos").unwrap(),
-        }
-    }
-    fn next_id(&self) -> u64 {
-        self.handle.generate_id().unwrap()
-    }
-    fn add(&mut self, title: String) {
-        let id = self.next_id();
-        let id_bytes = id.to_be_bytes();
-        let todo = Todo {
-            id,
-            title,
-            completed: false,
-        };
-        let todo_json = serde_json::to_string(&todo).unwrap();
-        let todo_bytes = todo_json.as_bytes();
-        self.handle.insert(id_bytes, todo_bytes).unwrap();
-    }
-    fn iter(&self) -> impl Iterator<Item = Todo> {
-        self.handle
-            .iter()
-            .map(|res| res.unwrap())
-            .map(|(_, v)| v)
-            .map(|v| serde_json::from_slice(&v).unwrap())
-    }
-    fn toggle(&mut self, id: u64) {
-        let id_bytes = id.to_be_bytes();
-        let todo_bytes = self.handle.get(id_bytes).unwrap().unwrap();
-        let mut todo: Todo = serde_json::from_slice(&todo_bytes).unwrap();
-        todo.completed = !todo.completed;
-        let todo_json = serde_json::to_string(&todo).unwrap();
-        let todo_bytes = todo_json.as_bytes();
-        self.handle.insert(id_bytes, todo_bytes).unwrap();
-    }
-    fn remove(&mut self, id: u64) {
-        let id_bytes = id.to_be_bytes();
-        self.handle.remove(id_bytes).unwrap();
-    }
-}
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct Todo {
-    id: u64,
-    title: String,
-    completed: bool,
-}
-
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<()> {
     // initialize tracing
     tracing_subscriber::fmt::init();
 
     // build our application with a route
+    let state = AppState::new()?;
     let app = Router::new()
         // `GET /` goes to `root`
         .route("/", get(root))
@@ -101,17 +57,18 @@ async fn main() {
         .route("/create_todo", put(create_todo))
         .route("/toggle_todo", post(toggle_todo))
         .route("/remove_todo", delete(remove_todo))
-        .with_state(AppStateContainer::new());
+        .with_state(state);
 
     // run our app with hyper, listening globally on port 3000
-    let listener = TcpListener::bind("0.0.0.0:3000").await.unwrap();
-    println!("Listening on http://{}", listener.local_addr().unwrap());
-    axum::serve(listener, app).await.unwrap();
+    let listener = TcpListener::bind("0.0.0.0:3000").await?;
+    println!("Listening on http://localhost:3000");
+    axum::serve(listener, app).await?;
+    Ok(())
 }
 
 // basic handler that responds with a static string
-async fn root(state: State<AppStateContainer>) -> Markup {
-    html! {
+async fn root(state: State<AppState>) -> Result<Markup, AppError> {
+    Ok(html! {
         (DOCTYPE)
         html {
             head {
@@ -126,12 +83,12 @@ async fn root(state: State<AppStateContainer>) -> Markup {
                     h1 class="text-4xl text-center text-gray-700 mb-6" { "Magical Axum + Maud + Htmx To-Do" }
                     (new_todo_html())
                     div id="todos" class="mt-6" {
-                        (todos(state).await)
+                        (todos(state).await?)
                     }
                 }
             }
         }
-    }
+    })
 }
 
 // === Components ===
@@ -175,10 +132,18 @@ fn todos_html(todos: &[Todo]) -> Markup {
 }
 
 // === Routes ===
-async fn todos(State(state): State<AppStateContainer>) -> Markup {
+async fn todos(State(state): State<AppState>) -> Result<Markup, AppError> {
     let state = state.read().await;
-    let todos = &state.iter().collect::<Vec<_>>();
-    todos_html(todos)
+    let mut todos = state.iter_prefix::<Todo>("todo")?;
+    let mut todos_vec = Vec::new();
+    for todo_result in &mut todos {
+        if let Ok((_, todo)) = todo_result {
+            todos_vec.push(todo);
+        } else {
+            return Err(anyhow::anyhow!("Error getting todos").into());
+        }
+    }
+    Ok(todos_html(&todos_vec))
 }
 
 #[derive(Deserialize)]
@@ -186,14 +151,15 @@ struct CreateTodo {
     title: String,
 }
 async fn create_todo(
-    State(mut app_state): State<AppStateContainer>,
+    State(mut app_state): State<AppState>,
     Json(CreateTodo { title }): Json<CreateTodo>,
-) -> Markup {
-    let mut app_state = app_state.write().await;
-    app_state.add(title);
-    let todos = &app_state.iter().collect::<Vec<_>>();
-    let created_todo = todos.last().unwrap();
-    todo_html(&created_todo)
+) -> Result<Markup, AppError> {
+    let app_state = app_state.write().await;
+    let id = app_state.next_id()?;
+    let todo = Todo::new(id, title);
+    let key = format!("todo:{}", id);
+    app_state.insert(&key, &todo)?;
+    Ok(todo_html(&todo))
 }
 
 #[derive(Deserialize)]
@@ -201,14 +167,18 @@ struct ToggleTodo {
     id: u64,
 }
 async fn toggle_todo(
-    State(mut app_state): State<AppStateContainer>,
+    State(mut app_state): State<AppState>,
     Json(ToggleTodo { id }): Json<ToggleTodo>,
-) -> Markup {
-    let mut app_state = app_state.write().await;
-    app_state.toggle(id);
-    let todos = &app_state.iter().collect::<Vec<_>>();
-    let toggled_todo = todos.iter().find(|todo| todo.id == id).unwrap();
-    todo_html(&toggled_todo)
+) -> Result<Markup, AppError> {
+    let app_state = app_state.write().await;
+    let key = format!("todo:{}", id);
+    let mut todo = app_state.get::<Todo, _>(&key)?;
+    if let Some(ref mut todo) = todo {
+        todo.completed = !todo.completed;
+        app_state.insert(&key, &todo)?;
+    }
+    let todo = todo.unwrap();
+    Ok(todo_html(&todo))
 }
 
 #[derive(Deserialize)]
@@ -216,10 +186,11 @@ struct RemoveTodo {
     id: u64,
 }
 async fn remove_todo(
-    State(mut app_state): State<AppStateContainer>,
+    State(mut app_state): State<AppState>,
     Json(RemoveTodo { id }): Json<RemoveTodo>,
-) -> Markup {
-    let mut app_state = app_state.write().await;
-    app_state.remove(id);
-    html!()
+) -> Result<Markup, AppError> {
+    let app_state = app_state.write().await;
+    let key = format!("todo:{}", id);
+    app_state.remove(&key)?;
+    Ok(html! {})
 }
