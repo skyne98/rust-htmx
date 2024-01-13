@@ -7,9 +7,9 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use axum::{
-    extract::State,
+    extract::{Query, State},
     routing::{delete, get, post, put},
-    Json, Router,
+    Form, Json, Router,
 };
 use db::driver::Db;
 use error::AppError;
@@ -99,14 +99,14 @@ fn todo_html(todo: &Todo) -> Markup {
             label class="flex-grow" {
                 @if todo.completed {
                     input type="checkbox" checked class="mr-2" hx-post="/toggle_todo" hx-target="closest li" hx-vals=(serde_json::json!({ "id": todo.id }))
-                        hx-ext="json-enc" hx-swap="outerHTML";
+                        hx-swap="outerHTML";
                 } @else {
                     input type="checkbox" class="mr-2" hx-post="/toggle_todo" hx-target="closest li" hx-vals=(serde_json::json!({ "id": todo.id }))
-                        hx-ext="json-enc" hx-swap="outerHTML";
+                        hx-swap="outerHTML";
                 }
                 span class={@if todo.completed { "line-through" } @else { "" }} { (todo.title) }
             }
-            button class="bg-red-500 hover:bg-red-700 text-white font-bold py-1 px-2 rounded" hx-delete="/remove_todo" hx-target="closest li" hx-swap="outerHTML" hx-vals=(serde_json::json!({ "id": todo.id })) hx-ext="json-enc" { "Remove" }
+            button class="bg-red-500 hover:bg-red-700 text-white font-bold py-1 px-2 rounded" hx-delete="/remove_todo" hx-target="closest li" hx-swap="outerHTML" hx-vals=(serde_json::json!({ "id": todo.id })) { "Remove" }
         }
     }
 }
@@ -114,7 +114,7 @@ fn todo_html(todo: &Todo) -> Markup {
 // an input box to create a new todo
 fn new_todo_html() -> Markup {
     html! {
-        form class="flex justify-between items-center" hx-put="/create_todo" hx-target="#todos ul" hx-swap="beforeend" hx-ext="json-enc" "hx-on::after-request"="this.reset()" {
+        form class="flex justify-between items-center" hx-put="/create_todo" hx-target="#todos ul" hx-swap="beforeend" "hx-on::after-request"="this.reset()" {
             input class="w-full rounded p-2 mr-4" type="text" name="title" placeholder="New Todo" required;
             button class="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded" type="submit" { "Add" }
         }
@@ -152,7 +152,7 @@ struct CreateTodo {
 }
 async fn create_todo(
     State(mut app_state): State<AppState>,
-    Json(CreateTodo { title }): Json<CreateTodo>,
+    Form(CreateTodo { title }): Form<CreateTodo>,
 ) -> Result<Markup, AppError> {
     let app_state = app_state.write().await;
     let id = app_state.next_id()?;
@@ -168,7 +168,7 @@ struct ToggleTodo {
 }
 async fn toggle_todo(
     State(mut app_state): State<AppState>,
-    Json(ToggleTodo { id }): Json<ToggleTodo>,
+    Form(ToggleTodo { id }): Form<ToggleTodo>,
 ) -> Result<Markup, AppError> {
     let app_state = app_state.write().await;
     let key = format!("todo:{}", id);
@@ -187,7 +187,7 @@ struct RemoveTodo {
 }
 async fn remove_todo(
     State(mut app_state): State<AppState>,
-    Json(RemoveTodo { id }): Json<RemoveTodo>,
+    Form(RemoveTodo { id }): Form<RemoveTodo>,
 ) -> Result<Markup, AppError> {
     let app_state = app_state.write().await;
     let key = format!("todo:{}", id);
